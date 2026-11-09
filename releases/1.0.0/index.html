@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Firefly Jar</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #0b1026; height: 100%; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas {
+    width: min(100vw, calc(100vh * 1.5));
+    height: min(100vh, calc(100vw / 1.5));
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    background: #101736;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="240" height="160"></canvas>
+<script>
+'use strict';
+/*
+ * Firefly Jar — a tiny Cubby Arcade test game.
+ * No words, no losing, no timer. D-pad walks, A swings the net, B waves.
+ * Input arrives as press(button)/release(button): from the Cubby host
+ * (HandheldSDK) when present, otherwise from keyboard/gamepad wired below.
+ */
+(function () {
+  var W = 240, H = 160, GROUND = 128;
+  var canvas = document.getElementById('game');
+  var ctx = canvas.getContext('2d');
+
+  // ---------- tiny sound (optional, best-effort) ----------
+  var audioCtx = null;
+  function blip(freq, dur) {
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      var o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = 'sine'; o.frequency.value = freq;
+      g.gain.setValueAtTime(0.08, audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+      o.connect(g); g.connect(audioCtx.destination);
+      o.start(); o.stop(audioCtx.currentTime + dur);
+    } catch (e) { /* silence is fine */ }
+  }
+
+  // ---------- saves (host saves when available, localStorage standalone) ----------
+  var SAVE_KEY = 'jar';
+  var localSaves = {
+    get: function (name) {
+      try { var v = localStorage.getItem('firefly-jar:' + name); return v ? JSON.parse(v) : null; }
+      catch (e) { return null; }
+    },
+    set: function (name, value) {
+      try { localStorage.setItem('firefly-jar:' + name, JSON.stringify(value)); } catch (e) {}
+    },
+    remove: function (name) {
+      try { localStorage.removeItem('firefly-jar:' + name); } catch (e) {}
+    }
+  };
+  var saves = localSaves;
+
+  // ---------- world state ----------
+  var kid = { x: 120, y: GROUND, dir: 1, walkPhase: 0, swing: 0, wave: 0 };
+  var held = {};
+  var flies = [];
+  var jarCount = 0;
+  var sparkles = [];
+  var stars = [];
+  var running = false, rafId = null, lastT = 0;
+
+  for (var s = 0; s < 40; s++) {
+    stars.push({ x: Math.random() * W, y: Math.random() * 70, p: Math.random() * 6.28 });
+  }
+  function spawnFly() {
+    flies.push({
+      x: 20 + Math.random() * (W - 40),
+      y: 40 + Math.random() * 70,
+      p: Math.random() * 6.28,
+      caught: false, t: 0
+    });
+  }
+  for (var i = 0; i < 7; i++) spawnFly();
+
+  function saveNow() {
+    try { saves.set(SAVE_KEY, { caught: jarCount, x: Math.round(kid.x) }); } catch (e) {}
+  }
+  function applySave(v) {
+    if (v && typeof v === 'object') {
+      if (typeof v.caught === 'number') jarCount = Math.max(0, Math.min(999, v.caught | 0));
+      if (typeof v.x === 'number') kid.x = Math.max(10, Math.min(W - 10, v.x));
+    }
+  }
+
+  // ---------- input: the game instance Cubby's host drives ----------
+  function press(button) {
+    held[button] = true;
+    if (button === 'a' && kid.swing <= 0) {
+      kid.swing = 14;
+      blip(660, 0.08);
+      tryCatch();
+    }
+    if (button === 'b' && kid.wave <= 0) {
+      kid.wave = 20;
+      blip(440, 0.08);
+      for (var i = 0; i < flies.length; i++) {
+        var f = flies[i];
+        if (!f.caught && Math.abs(f.x - kid.x) < 46 && Math.abs(f.y - (kid.y - 14)) < 40) f.t = 30;
+      }
+    }
+  }
+  function release(button) { held[button] = false; }
+
+  function tryCatch() {
+    var reachX = kid.x + kid.dir * 13, reachY = kid.y - 15;
+    for (var i = 0; i < flies.length; i++) {
+      var f = flies[i];
+      if (!f.caught && Math.abs(f.x - reachX) < 11 && Math.abs(f.y - reachY) < 12) {
+        f.caught = true; f.t = 0;
+        blip(880, 0.12);
+        return;
+      }
+    }
+  }
+
+  // ---------- update ----------
+  function update(dt) {
+    var speed = 42 * dt; // px per second-ish (dt in 60fps frames)
+    var moving = false;
+    if (held.left)  { kid.x -= speed; kid.dir = -1; moving = true; }
+    if (held.right) { kid.x += speed; kid.dir = 1;  moving = true; }
+    if (held.up)    { kid.y -= speed * 0.45; moving = true; }
+    if (held.down)  { kid.y += speed * 0.45; moving = true; }
+    kid.x = Math.max(10, Math.min(W - 10, kid.x));
+    kid.y = Math.max(GROUND - 16, Math.min(GROUND + 8, kid.y));
+    if (moving) kid.walkPhase += dt * 0.35; else kid.walkPhase = 0;
+    if (kid.swing > 0) kid.swing -= dt;
+    if (kid.wave > 0) kid.wave -= dt;
+
+    for (var i = 0; i < flies.length; i++) {
+      var f = flies[i];
+      if (f.caught) {
+        // fly to the jar (top-right), then settle in as a dot of light
+        f.t += dt;
+        var k = Math.min(1, f.t / 28);
+        f.x += (224 - f.x) * 0.12 * dt;
+        f.y += (18 - f.y) * 0.12 * dt;
+        if (k >= 1) {
+          flies.splice(i, 1); i--;
+          jarCount++;
+          sparkles.push({ x: 224, y: 18, t: 0 });
+          blip(990, 0.15);
+          saveNow();
+          spawnFly();
+        }
+      } else {
+        f.p += 0.02 * dt;
+        f.x += Math.sin(f.p * 1.7) * 0.25 * dt;
+        f.y += Math.cos(f.p * 2.3) * 0.18 * dt;
+        if (f.t > 0) { f.t -= dt; f.y -= 0.4 * dt; } // waved-at flutter
+        f.x = Math.max(6, Math.min(W - 6, f.x));
+        f.y = Math.max(24, Math.min(GROUND - 6, f.y));
+      }
+    }
+    for (var j = sparkles.length - 1; j >= 0; j--) {
+      sparkles[j].t += dt;
+      if (sparkles[j].t > 24) sparkles.splice(j, 1);
+    }
+  }
+
+  // ---------- draw ----------
+  function draw(now) {
+    // sky
+    var grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, '#101736'); grad.addColorStop(1, '#1d2a52');
+    ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H);
+    // stars
+    ctx.fillStyle = '#cfe0ff';
+    for (var i = 0; i < stars.length; i++) {
+      var st = stars[i];
+      if (Math.sin(now / 700 + st.p) > 0.2) ctx.fillRect(st.x, st.y, 1, 1);
+    }
+    // moon
+    ctx.fillStyle = '#f4ecd2';
+    ctx.beginPath(); ctx.arc(28, 22, 8, 0, 6.29); ctx.fill();
+    ctx.fillStyle = '#101736';
+    ctx.beginPath(); ctx.arc(32, 19, 7, 0, 6.29); ctx.fill();
+    // hills + ground
+    ctx.fillStyle = '#16281c';
+    ctx.beginPath(); ctx.ellipse(40, 150, 90, 26, 0, 3.14, 0); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(210, 154, 100, 28, 0, 3.14, 0); ctx.fill();
+    ctx.fillStyle = '#1e3a26'; ctx.fillRect(0, GROUND + 6, W, H - GROUND - 6);
+    // grass tufts
+    ctx.strokeStyle = '#2c5233'; ctx.lineWidth = 1;
+    for (var gx = 6; gx < W; gx += 17) {
+      ctx.beginPath();
+      ctx.moveTo(gx, GROUND + 10); ctx.lineTo(gx - 2, GROUND + 4);
+      ctx.moveTo(gx + 3, GROUND + 10); ctx.lineTo(gx + 4, GROUND + 3);
+      ctx.stroke();
+    }
+
+    // jar (top-right): glass + caught fireflies as dots of light
+    var jx = 218, jy = 8;
+    ctx.fillStyle = 'rgba(180,210,255,0.20)';
+    ctx.fillRect(jx, jy + 3, 14, 15);
+    ctx.strokeStyle = 'rgba(210,230,255,0.75)';
+    ctx.strokeRect(jx + 0.5, jy + 3.5, 13, 14);
+    ctx.fillStyle = '#8a6f4d'; ctx.fillRect(jx + 1, jy, 12, 3); // lid
+    var dots = Math.min(jarCount, 12);
+    ctx.fillStyle = '#ffe066';
+    for (var d = 0; d < dots; d++) {
+      var dx = jx + 3 + (d % 4) * 3, dy = jy + 14 - Math.floor(d / 4) * 4;
+      if (Math.sin(now / 300 + d * 1.7) > -0.4) ctx.fillRect(dx, dy, 2, 2);
+    }
+
+    // fireflies
+    for (var i2 = 0; i2 < flies.length; i2++) {
+      var f = flies[i2];
+      var glow = 0.6 + 0.4 * Math.sin(now / 240 + f.p * 3);
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = 'rgba(255,224,102,' + (0.16 * glow) + ')';
+      ctx.beginPath(); ctx.arc(f.x, f.y, 5, 0, 6.29); ctx.fill();
+      ctx.fillStyle = 'rgba(255,240,170,' + (0.95 * glow) + ')';
+      ctx.beginPath(); ctx.arc(f.x, f.y, 1.6, 0, 6.29); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    // sparkles at the jar
+    for (var s2 = 0; s2 < sparkles.length; s2++) {
+      var sp = sparkles[s2], r = sp.t / 2;
+      ctx.strokeStyle = 'rgba(255,240,170,' + (1 - sp.t / 24) + ')';
+      ctx.beginPath(); ctx.arc(sp.x, sp.y, r, 0, 6.29); ctx.stroke();
+    }
+
+    // kid
+    var kx = Math.round(kid.x), ky = Math.round(kid.y);
+    var bob = (kid.walkPhase % 1 > 0.5) ? 1 : 0;
+    ctx.fillStyle = '#233047'; // legs
+    ctx.fillRect(kx - 4, ky - 6 + bob, 3, 6 - bob);
+    ctx.fillRect(kx + 1, ky - 6 + (1 - bob), 3, 6 - (1 - bob));
+    ctx.fillStyle = '#e2543e'; // body (red hoodie)
+    ctx.fillRect(kx - 5, ky - 14, 10, 9);
+    ctx.fillStyle = '#f2c29b'; // head
+    ctx.beginPath(); ctx.arc(kx, ky - 19, 5, 0, 6.29); ctx.fill();
+    ctx.fillStyle = '#2e7d4f'; // cap
+    ctx.beginPath(); ctx.arc(kx, ky - 20, 5, 3.14, 0); ctx.fill();
+    ctx.fillRect(kx + (kid.dir > 0 ? 2 : -8), ky - 20, 6, 2);
+    // arm + net
+    var ax = kx + kid.dir * 6, ay = ky - 11;
+    ctx.strokeStyle = '#f2c29b'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(kx, ky - 11);
+    if (kid.wave > 0) {
+      ctx.lineTo(ax + kid.dir * 2, ay - 4 - Math.sin(kid.wave) * 2);
+    } else {
+      ctx.lineTo(ax, ay);
+    }
+    ctx.stroke();
+    var swingK = kid.swing > 0 ? Math.sin((14 - kid.swing) / 14 * 3.14) : 0;
+    var nx = ax + kid.dir * (4 + swingK * 6), ny = ay - 2 - swingK * 5;
+    ctx.strokeStyle = '#c9a86a'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(nx, ny); ctx.stroke();
+    ctx.strokeStyle = 'rgba(230,240,255,0.9)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(nx + kid.dir * 3, ny - 2, 4.5, 0, 6.29); ctx.stroke();
+  }
+
+  // ---------- loop / lifecycle ----------
+  function frame(t) {
+    if (!running) return;
+    var dt = Math.min(3, lastT ? (t - lastT) / 16.7 : 1);
+    lastT = t;
+    update(dt);
+    draw(t);
+    rafId = requestAnimationFrame(frame);
+  }
+  var game = {
+    press: press,
+    release: release,
+    stop: function () {
+      running = false;
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = null; lastT = 0;
+      saveNow();
+    },
+    wake: function () {
+      if (!running) { running = true; rafId = requestAnimationFrame(frame); }
+    },
+    start: function () {
+      if (!running) { running = true; rafId = requestAnimationFrame(frame); }
+    }
+  };
+  addEventListener('handheld:sleep', function () { saveNow(); });
+
+  // ---------- standalone input (plain browser only) ----------
+  var KEYMAP = {
+    ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down',
+    KeyA: 'left', KeyD: 'right', KeyW: 'up', KeyS: 'down',
+    KeyZ: 'a', Enter: 'a', Space: 'a', KeyX: 'b', ShiftLeft: 'b', ShiftRight: 'b'
+  };
+  function wireStandaloneInput() {
+    addEventListener('keydown', function (e) {
+      var b = KEYMAP[e.code];
+      if (b) { e.preventDefault(); if (!e.repeat) press(b); }
+    });
+    addEventListener('keyup', function (e) {
+      var b = KEYMAP[e.code];
+      if (b) { e.preventDefault(); release(b); }
+    });
+    var padState = {};
+    var PADMAP = { 12: 'up', 13: 'down', 14: 'left', 15: 'right', 0: 'a', 1: 'b', 9: 'start' };
+    setInterval(function () {
+      var pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      var pad = null;
+      for (var i = 0; i < pads.length; i++) if (pads[i]) { pad = pads[i]; break; }
+      if (!pad) return;
+      for (var idx in PADMAP) {
+        var name = PADMAP[idx], down = !!(pad.buttons[idx] && pad.buttons[idx].pressed);
+        if (down && !padState[name]) press(name);
+        if (!down && padState[name]) release(name);
+        padState[name] = down;
+      }
+      var ax = pad.axes[0] || 0, ay = pad.axes[1] || 0;
+      var axisMap = { left: ax < -0.4, right: ax > 0.4, up: ay < -0.4, down: ay > 0.4 };
+      for (var an in axisMap) {
+        if (axisMap[an] && !padState[an]) press(an);
+        if (!axisMap[an] && padState[an]) release(an);
+        padState[an] = axisMap[an];
+      }
+    }, 50);
+  }
+
+  // ---------- boot: Cubby host if present, else standalone ----------
+  function bootSaves() {
+    try {
+      var v = saves.get(SAVE_KEY);
+      if (v && typeof v.then === 'function') v.then(applySave).catch(function () {});
+      else applySave(v);
+    } catch (e) {}
+  }
+  if (window.HandheldSDK && window.HandheldPlatform) {
+    try {
+      var platform = window.HandheldPlatform.createPlatform();
+      var host = window.HandheldSDK.createGameHost({ gameId: 'firefly-jar', platform: platform });
+      saves = host.saves || saves;
+      bootSaves();
+      host.start(game);
+    } catch (e) {
+      wireStandaloneInput();
+      bootSaves();
+      game.wake();
+    }
+  } else {
+    wireStandaloneInput();
+    bootSaves();
+    game.wake();
+  }
+})();
+</script>
+</body>
+</html>
