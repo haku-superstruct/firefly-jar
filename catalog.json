@@ -5,5 +5,12 @@
     "manifest_url": "https://haku-superstruct.github.io/firefly-jar/arcade/manifest.json",
     "artwork": "https://haku-superstruct.github.io/firefly-jar/releases/1.0.0/cover.svg",
     "screenshots": []
+  },
+  {
+    "id": "pond-hopper",
+    "title": "Pond Hopper",
+    "manifest_url": "https://haku-superstruct.github.io/firefly-jar/pond-hopper/arcade/manifest.json",
+    "artwork": "https://haku-superstruct.github.io/firefly-jar/pond-hopper/releases/1.0.0/cover.svg",
+    "screenshots": []
   }
 ]
